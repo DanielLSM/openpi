@@ -1090,7 +1090,7 @@ _CONFIGS = [
             single_corpus_name="simple_close_door",
             single_corpus_root_env="SIMPLE_CLOSE_DOOR_VLA_ROOT",
             single_proprio_root_env="SIMPLE_CLOSE_DOOR_PROPRIO_ROOT",
-            single_corpus_q_order="isaac",
+            single_corpus_q_order="g1",
         ),
         batch_size=16,
         fsdp_devices=2,
