@@ -442,8 +442,34 @@ class SonicTokenDataConfig(DataConfigFactory):
             raise ValueError("continuation_fraction requires continuation_root_env")
         if continuation_root_env is not None and not 0.0 < continuation_fraction < 1.0:
             raise ValueError("continuation_fraction must be in (0,1) when continuation mixing is enabled")
+        if continuation_root_env is not None:
+            if model_config.action_horizon != 50 or model_config.action_dim != 64:
+                raise ValueError(
+                    "continuation mixing requires the fixed SONIC action contract "
+                    f"(horizon=50, action_dim=64), got "
+                    f"(horizon={model_config.action_horizon}, action_dim={model_config.action_dim})"
+                )
+            if self.history != 0 or model_config.prev_token_history != 0:
+                raise ValueError(
+                    "continuation mixing requires zero previous-token history; "
+                    f"got data.history={self.history}, "
+                    f"model.prev_token_history={model_config.prev_token_history}"
+                )
 
         def dataset_factory(action_horizon: int, mc: _model.BaseModelConfig):
+            if not isinstance(mc, pi0_config.Pi0Config):
+                raise TypeError(f"continuation dataset requires Pi0Config, got {type(mc).__name__}")
+            if continuation_root_env is not None:
+                if action_horizon != 50 or mc.action_dim != 64:
+                    raise ValueError(
+                        "continuation dataset factory requires (horizon=50, action_dim=64), "
+                        f"got (horizon={action_horizon}, action_dim={mc.action_dim})"
+                    )
+                if history != 0 or mc.prev_token_history != 0:
+                    raise ValueError(
+                        "continuation dataset factory requires zero previous-token history; "
+                        f"got data.history={history}, model.prev_token_history={mc.prev_token_history}"
+                    )
             import sys
 
             if repo_root not in sys.path:
