@@ -398,6 +398,11 @@ class SonicTokenDataConfig(DataConfigFactory):
     single_corpus_root_env: str | None = None
     single_proprio_root_env: str | None = None
     single_corpus_q_order: str = "g1"
+    # Optional causal teacher-suffix records, mixed into TRAIN only. The eval split remains
+    # demonstration-only so held-out metrics are directly comparable with the matched control.
+    continuation_root_env: str | None = None
+    continuation_fraction: float = 0.0
+    continuation_seed: int = 0
     # Corpora dropped from the TRAIN split only (eval/test still use them). e.g. ("humanoid_everyday",)
     # ablates HE from training while keeping the HE eval + test_locomotion sets identical.
     train_exclude_corpora: tuple[str, ...] = ()
@@ -429,6 +434,14 @@ class SonicTokenDataConfig(DataConfigFactory):
         single_corpus_root_env = self.single_corpus_root_env
         single_proprio_root_env = self.single_proprio_root_env
         single_corpus_q_order = self.single_corpus_q_order
+        continuation_root_env = self.continuation_root_env
+        continuation_fraction = self.continuation_fraction
+        continuation_seed = self.continuation_seed
+
+        if continuation_root_env is None and continuation_fraction != 0.0:
+            raise ValueError("continuation_fraction requires continuation_root_env")
+        if continuation_root_env is not None and not 0.0 < continuation_fraction < 1.0:
+            raise ValueError("continuation_fraction must be in (0,1) when continuation mixing is enabled")
 
         def dataset_factory(action_horizon: int, mc: _model.BaseModelConfig):
             import sys
@@ -489,7 +502,24 @@ class SonicTokenDataConfig(DataConfigFactory):
             index_dir = os.environ.get("SONIC_INDEX_DIR")
             if index_dir:
                 kwargs["cache_dir"] = index_dir
-            return SonicTokenDataset(corpora, **kwargs)
+            dataset = SonicTokenDataset(corpora, **kwargs)
+            if continuation_root_env is not None and split == "train":
+                continuation_root = os.environ.get(continuation_root_env)
+                if not continuation_root:
+                    raise ValueError(f"set {continuation_root_env} for continuation training")
+                from pi05_sonic_vla.data.continuation_dataset import (  # pyright: ignore[reportMissingImports]
+                    MixedSonicContinuationDataset,
+                    SonicContinuationDataset,
+                )
+
+                continuation = SonicContinuationDataset(continuation_root, validate_all=True)
+                dataset = MixedSonicContinuationDataset(
+                    dataset,
+                    continuation,
+                    fraction=continuation_fraction,
+                    seed=continuation_seed,
+                )
+            return dataset
 
         data_transforms = _transforms.Group(
             inputs=[sonic_policy.SonicTokenInputs(action_dim=model_config.action_dim)],
@@ -1105,6 +1135,90 @@ _CONFIGS = [
         num_workers=8,
         num_train_steps=2_000,
         eval_interval=100,
+        eval_batches=8,
+    ),
+    # Matched 500-step pilot initialized from the selected Close Door step-2000 checkpoint.
+    # The control sees demonstrations only; the treatment's only difference is a deterministic
+    # 50% mixture of causal teacher-suffix continuation records in the TRAIN split.
+    TrainConfig(
+        name="pi05_sonic_simple_close_door_continue_control",
+        project_name="humanoid-vla",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_dim=64, action_horizon=50,
+            prev_token_history=0, discrete_state_input=True,
+        ),
+        data=SonicTokenDataConfig(
+            repo_id="sonic_simple_close_door",
+            history=0,
+            history_stride=20,
+            split="train",
+            use_proprio=True,
+            samples_per_epoch=20_000,
+            eval_corpora=("simple_close_door",),
+            eval_frac=0.1,
+            test_frac=0.0,
+            single_corpus_name="simple_close_door",
+            single_corpus_root_env="SIMPLE_CLOSE_DOOR_VLA_ROOT",
+            single_proprio_root_env="SIMPLE_CLOSE_DOOR_PROPRIO_ROOT",
+            single_corpus_q_order="g1",
+        ),
+        batch_size=16,
+        fsdp_devices=4,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=25, peak_lr=2e-6, decay_steps=500, decay_lr=2e-7,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=sonic_policy.SonicCheckpointWeightLoader("$MERT_CLOSE_DOOR_INIT_PARAMS"),
+        assets_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_ASSETS_BASE_DIR", "./assets"),
+        checkpoint_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_CHECKPOINT_BASE_DIR", "./checkpoints"),
+        num_workers=8,
+        num_train_steps=500,
+        log_interval=10,
+        save_interval=50,
+        eval_interval=50,
+        eval_batches=8,
+    ),
+    TrainConfig(
+        name="pi05_sonic_simple_close_door_continue",
+        project_name="humanoid-vla",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_dim=64, action_horizon=50,
+            prev_token_history=0, discrete_state_input=True,
+        ),
+        data=SonicTokenDataConfig(
+            repo_id="sonic_simple_close_door",
+            history=0,
+            history_stride=20,
+            split="train",
+            use_proprio=True,
+            samples_per_epoch=20_000,
+            eval_corpora=("simple_close_door",),
+            eval_frac=0.1,
+            test_frac=0.0,
+            single_corpus_name="simple_close_door",
+            single_corpus_root_env="SIMPLE_CLOSE_DOOR_VLA_ROOT",
+            single_proprio_root_env="SIMPLE_CLOSE_DOOR_PROPRIO_ROOT",
+            single_corpus_q_order="g1",
+            continuation_root_env="SIMPLE_CLOSE_DOOR_CONTINUATION_ROOT",
+            continuation_fraction=0.5,
+            continuation_seed=20260714,
+        ),
+        batch_size=16,
+        fsdp_devices=4,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=25, peak_lr=2e-6, decay_steps=500, decay_lr=2e-7,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=sonic_policy.SonicCheckpointWeightLoader("$MERT_CLOSE_DOOR_INIT_PARAMS"),
+        assets_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_ASSETS_BASE_DIR", "./assets"),
+        checkpoint_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_CHECKPOINT_BASE_DIR", "./checkpoints"),
+        num_workers=8,
+        num_train_steps=500,
+        log_interval=10,
+        save_interval=50,
+        eval_interval=50,
         eval_batches=8,
     ),
     TrainConfig(
