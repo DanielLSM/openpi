@@ -1163,9 +1163,9 @@ _CONFIGS = [
         eval_interval=100,
         eval_batches=8,
     ),
-    # Matched 500-step pilot initialized from the selected Close Door step-2000 checkpoint.
-    # The control sees demonstrations only; the treatment's only difference is a deterministic
-    # 50% mixture of causal teacher-suffix continuation records in the TRAIN split.
+    # Matched 2,000-step experiment initialized directly from the original Mert no-history
+    # checkpoint. The control sees demonstrations only; the treatment's only difference is a
+    # deterministic 50% mixture of causal teacher-suffix continuation records in the TRAIN split.
     TrainConfig(
         name="pi05_sonic_simple_close_door_continue_control",
         project_name="humanoid-vla",
@@ -1191,18 +1191,18 @@ _CONFIGS = [
         batch_size=16,
         fsdp_devices=4,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=25, peak_lr=2e-6, decay_steps=500, decay_lr=2e-7,
+            warmup_steps=100, peak_lr=1e-5, decay_steps=2_000, decay_lr=1e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=sonic_policy.SonicCheckpointWeightLoader("$MERT_CLOSE_DOOR_INIT_PARAMS"),
+        weight_loader=sonic_policy.SonicCheckpointWeightLoader("$MERT_NOHIST_INIT_PARAMS"),
         assets_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_ASSETS_BASE_DIR", "./assets"),
         checkpoint_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_CHECKPOINT_BASE_DIR", "./checkpoints"),
         num_workers=8,
-        num_train_steps=500,
+        num_train_steps=2_000,
         log_interval=10,
-        save_interval=50,
-        eval_interval=50,
+        save_interval=100,
+        eval_interval=100,
         eval_batches=8,
     ),
     TrainConfig(
@@ -1233,18 +1233,18 @@ _CONFIGS = [
         batch_size=16,
         fsdp_devices=4,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=25, peak_lr=2e-6, decay_steps=500, decay_lr=2e-7,
+            warmup_steps=100, peak_lr=1e-5, decay_steps=2_000, decay_lr=1e-6,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=sonic_policy.SonicCheckpointWeightLoader("$MERT_CLOSE_DOOR_INIT_PARAMS"),
+        weight_loader=sonic_policy.SonicCheckpointWeightLoader("$MERT_NOHIST_INIT_PARAMS"),
         assets_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_ASSETS_BASE_DIR", "./assets"),
         checkpoint_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_CHECKPOINT_BASE_DIR", "./checkpoints"),
         num_workers=8,
-        num_train_steps=500,
+        num_train_steps=2_000,
         log_interval=10,
-        save_interval=50,
-        eval_interval=50,
+        save_interval=100,
+        eval_interval=100,
         eval_batches=8,
     ),
     TrainConfig(
