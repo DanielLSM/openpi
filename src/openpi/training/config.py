@@ -397,6 +397,7 @@ class SonicTokenDataConfig(DataConfigFactory):
     single_corpus_name: str | None = None
     single_corpus_root_env: str | None = None
     single_proprio_root_env: str | None = None
+    single_hand_root_env: str | None = None
     single_corpus_q_order: str = "g1"
     # Optional causal teacher-suffix records, mixed into TRAIN only. The eval split remains
     # demonstration-only so held-out metrics are directly comparable with the matched control.
@@ -450,6 +451,7 @@ class SonicTokenDataConfig(DataConfigFactory):
         single_corpus_name = self.single_corpus_name
         single_corpus_root_env = self.single_corpus_root_env
         single_proprio_root_env = self.single_proprio_root_env
+        single_hand_root_env = self.single_hand_root_env
         single_corpus_q_order = self.single_corpus_q_order
         continuation_root_env = self.continuation_root_env
         continuation_fraction = self.continuation_fraction
@@ -513,9 +515,17 @@ class SonicTokenDataConfig(DataConfigFactory):
                     proprio_root = os.environ.get(single_proprio_root_env)
                     if not proprio_root:
                         raise ValueError(f"set {single_proprio_root_env} for {single_corpus_name}")
+                hand_root = None
+                if use_hand:
+                    if not single_hand_root_env:
+                        raise ValueError("single_hand_root_env is required when use_hand=True")
+                    hand_root = os.environ.get(single_hand_root_env)
+                    if not hand_root:
+                        raise ValueError(f"set {single_hand_root_env} for {single_corpus_name}")
                 corpora = [CorpusSpec(
                     single_corpus_name, "lerobot", root, 1.0,
-                    proprio_root=proprio_root, q_order=single_corpus_q_order,
+                    proprio_root=proprio_root, hand_root=hand_root,
+                    q_order=single_corpus_q_order,
                 )]
             elif use_proprio:
                 corpora = default_corpora(
@@ -1209,6 +1219,50 @@ _CONFIGS = [
         num_train_steps=2_000,
         eval_interval=100,
         eval_batches=8,
+    ),
+    # Task-specific BHS fine-tune from pi05_sonic_bhs_anneal. The hand target and the
+    # causal t-50 hand-state token both come from an explicitly configured sidecar root.
+    TrainConfig(
+        name="pi05_sonic_bhs_simple_close_door",
+        project_name="humanoid-vla",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_dim=128, action_horizon=50, max_token_len=448,
+            prev_token_history=0, discrete_state_input=True, use_action_dim_valid=True,
+        ),
+        data=SonicTokenDataConfig(
+            repo_id="sonic_simple_close_door_bhs",
+            history=0,
+            history_stride=20,
+            split="train",
+            use_proprio=True,
+            use_hand=True,
+            use_hand_state=True,
+            hand_state_dropout=0.5,
+            samples_per_epoch=20_000,
+            eval_corpora=("simple_close_door",),
+            eval_frac=0.1,
+            test_frac=0.0,
+            single_corpus_name="simple_close_door",
+            single_corpus_root_env="SIMPLE_CLOSE_DOOR_VLA_ROOT",
+            single_proprio_root_env="SIMPLE_CLOSE_DOOR_PROPRIO_ROOT",
+            single_hand_root_env="SIMPLE_CLOSE_DOOR_HAND_ROOT",
+            single_corpus_q_order="g1",
+        ),
+        batch_size=16,
+        fsdp_devices=4,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100, peak_lr=1e-5, decay_steps=2_000, decay_lr=1e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=sonic_policy.SonicCheckpointWeightLoader("$BHS_SIMPLE_CLOSE_DOOR_INIT_PARAMS"),
+        assets_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_ASSETS_BASE_DIR", "./assets"),
+        checkpoint_base_dir=os.environ.get("SIMPLE_CLOSE_DOOR_CHECKPOINT_BASE_DIR", "./checkpoints"),
+        num_workers=8,
+        num_train_steps=2_000,
+        eval_interval=100,
+        eval_batches=8,
+        loss_dim_groups={"body": (0, 64), "hand": (64, 128)},
     ),
     # Matched 2,000-step experiment initialized directly from the original Mert no-history
     # checkpoint. The control sees demonstrations only; the treatment's only difference is a
