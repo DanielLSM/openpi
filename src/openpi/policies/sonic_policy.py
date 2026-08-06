@@ -7,6 +7,7 @@ No proprioception. The action space is the 64-d SONIC FSQ token (this project's 
 discrete_state_input=False never reads it).
 """
 import dataclasses
+import os
 
 import flax.traverse_util
 import numpy as np
@@ -103,9 +104,12 @@ class SonicCheckpointWeightLoader(weight_loaders.WeightLoader):
     params_path: str
 
     def load(self, params):
+        params_path = os.path.expandvars(self.params_path)
+        if "$" in params_path:
+            raise ValueError(f"unresolved environment variable in SONIC checkpoint path: {self.params_path}")
         print(f"[SonicCheckpointWeightLoader] downloading + loading base weights from "
-              f"{self.params_path} (first run fetches several GB)...", flush=True)
-        loaded = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+              f"{params_path} (first run fetches several GB)...", flush=True)
+        loaded = _model.restore_params(download.maybe_download(params_path), restore_type=np.ndarray)
         flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
         flat_loaded = flax.traverse_util.flatten_dict(loaded, sep="/")
         result, kept, fresh = {}, 0, 0
