@@ -1439,6 +1439,8 @@ _CONFIGS = [
         weight_loader=sonic_policy.SonicCheckpointWeightLoader(
             os.environ.get("SONIC_FT_INIT", "gs://openpi-assets/checkpoints/pi05_base/params")
         ),
+        assets_base_dir=os.environ.get("BHS3_BTFT_ASSETS_BASE_DIR", "./assets"),
+        checkpoint_base_dir=os.environ.get("BHS3_BTFT_CHECKPOINT_BASE_DIR", "./checkpoints"),
         num_workers=8,
         num_train_steps=2_500,
         eval_interval=250,
