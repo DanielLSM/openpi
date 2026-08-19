@@ -420,6 +420,11 @@ class SonicTokenDataConfig(DataConfigFactory):
     # SIMPLE-finetune corpus: append the converted SIMPLE teleop demos (weight from
     # weights["simple"]). Roots env-overridable (SONIC_SIMPLE_{ROOT,PROPRIO,HAND}).
     include_simple: bool = False
+    # Single-corpus SIMPLE fine-tune: train ONLY on the SONIC_SIMPLE_{ROOT,PROPRIO,HAND}
+    # corpus and skip the 5-corpus mix entirely (their roots need not exist on the host).
+    # The held-out eval split is a deterministic ~test_frac crc32 hash band of the simple
+    # corpus itself (the default eval_corpora targets humanoid_everyday, which is absent).
+    simple_only: bool = False
     # Consistent state joint-order fix: serve ALL corpora's q_dev in SONIC-grouped order
     # (robot sidecars are stored IsaacLab-ordered but were historically served un-remapped,
     # while Xperience was remapped and deploy sends SONIC-grouped — verified 2026-07-30).
@@ -458,6 +463,7 @@ class SonicTokenDataConfig(DataConfigFactory):
         weights_end, mix_anneal_samples = self.weights_end, self.mix_anneal_samples
         scenario = self.scenario
         include_simple, fix_state_order = self.include_simple, self.fix_state_order
+        simple_only = self.simple_only
 
         def dataset_factory(action_horizon: int, mc: _model.BaseModelConfig):
             import sys
@@ -470,19 +476,34 @@ class SonicTokenDataConfig(DataConfigFactory):
             # v2: 5-corpus mix with proprio sidecars (box-default paths, env-overridable). v1: the
             # original fully-latent 3-corpus setup (cluster-default paths, env-overridable).
             if use_proprio:
-                corpora = default_corpora(
-                    weights, he_category_filter=None if he_all_categories else "Locomanip")
-                if include_simple:
+                if simple_only:
+                    # Single-corpus fine-tune: ONLY the SONIC_SIMPLE_* corpus. Do NOT call
+                    # default_corpora -- it would build index specs for the full 5-corpus
+                    # mix, whose roots may not exist on this host.
                     _task = "G1WholebodyLocomotionPickBetweenTablesTeleop-v0"
                     _d = os.environ.get("SONIC_DATASETS", "/home/mealbaba/datasets")
-                    corpora.append(CorpusSpec(
+                    corpora = [CorpusSpec(
                         "simple", "lerobot",
                         os.environ.get("SONIC_SIMPLE_ROOT", f"{_d}/SIMPLE-VLA/{_task}"),
-                        (weights or {}).get("simple", 0.0),
+                        1.0,
                         proprio_root=os.environ.get("SONIC_SIMPLE_PROPRIO", f"{_d}/SIMPLE-Proprio/{_task}"),
                         hand_root=os.environ.get("SONIC_SIMPLE_HAND", f"{_d}/SIMPLE-Hand/{_task}"),
                         hand_file=("hand_targets.npy" if use_hand_joints else "hand_tokens.npy"),
-                    ))
+                    )]
+                else:
+                    corpora = default_corpora(
+                        weights, he_category_filter=None if he_all_categories else "Locomanip")
+                    if include_simple:
+                        _task = "G1WholebodyLocomotionPickBetweenTablesTeleop-v0"
+                        _d = os.environ.get("SONIC_DATASETS", "/home/mealbaba/datasets")
+                        corpora.append(CorpusSpec(
+                            "simple", "lerobot",
+                            os.environ.get("SONIC_SIMPLE_ROOT", f"{_d}/SIMPLE-VLA/{_task}"),
+                            (weights or {}).get("simple", 0.0),
+                            proprio_root=os.environ.get("SONIC_SIMPLE_PROPRIO", f"{_d}/SIMPLE-Proprio/{_task}"),
+                            hand_root=os.environ.get("SONIC_SIMPLE_HAND", f"{_d}/SIMPLE-Hand/{_task}"),
+                            hand_file=("hand_targets.npy" if use_hand_joints else "hand_tokens.npy"),
+                        ))
                 if fix_state_order:
                     # all robot sidecars store q_dev in IsaacLab order -> mark them for the
                     # IL->G1 remap at load so every corpus (and deploy) shares SONIC-grouped order
@@ -523,6 +544,12 @@ class SonicTokenDataConfig(DataConfigFactory):
                 mix_anneal_samples=mix_anneal_samples,
                 scenario_filter=scenario,
             )
+            if simple_only:
+                # Held-out eval must come from the simple corpus itself: the dataset's
+                # default eval_corpora=("humanoid_everyday",) would yield an EMPTY eval
+                # split here. eval_frac tracks test_frac so one knob sets the band size.
+                kwargs["eval_corpora"] = ("simple",)
+                kwargs["eval_frac"] = test_frac
             index_dir = os.environ.get("SONIC_INDEX_DIR")
             if index_dir:
                 kwargs["cache_dir"] = index_dir
@@ -1378,6 +1405,43 @@ _CONFIGS = [
         num_workers=8,
         num_train_steps=40_000,
         eval_interval=500,
+        eval_batches=8,
+        loss_dim_groups={"body": (0, 64), "hand": (64, 128)},
+    ),
+    # BHS3-BETWEEN-TABLES-FT: bounded fine-tune of pi05_bhs3_rtc_heft@29999 on the frozen-token
+    # tokenft-v1 BetweenTables corpus (14 episodes, SINGLE simple corpus only -- no anti-forgetting
+    # mix). Identical model/state shapes to pi05_sonic_bhs2 (state 110 = q_dev29 + gravity3 +
+    # lagged hand token 64 + dex3 14; action 128 = body64 + hand64 tokens). Corpus roots via
+    #   SONIC_SIMPLE_ROOT / SONIC_SIMPLE_PROPRIO / SONIC_SIMPLE_HAND,
+    # init via SONIC_FT_INIT (staged pi05_bhs3_rtc_heft/29999 params). Held-out eval = a
+    # deterministic 15% crc32 band of the corpus (simple_only wires eval_corpora=("simple",)).
+    TrainConfig(
+        name="pi05_sonic_bhs3_between_tables_ft",
+        project_name="humanoid-vla",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_dim=128, action_horizon=50, max_token_len=512,
+            prev_token_history=0, discrete_state_input=True, use_action_dim_valid=True,
+        ),
+        data=SonicTokenDataConfig(
+            repo_id="sonic_bhs3_btft", history=0, history_stride=20, split="train",
+            test_frac=0.15, use_proprio=True, use_hand=True, use_hand_state=True,
+            use_hand_proprio=True, include_simple=True, simple_only=True,
+            fix_state_order=True,
+        ),
+        batch_size=16,
+        fsdp_devices=4,
+        # he_ft idiom: short warmup, halved peak, constant after warmup (peak == decay_lr).
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500, peak_lr=2.5e-5, decay_steps=2_500, decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=sonic_policy.SonicCheckpointWeightLoader(
+            os.environ.get("SONIC_FT_INIT", "gs://openpi-assets/checkpoints/pi05_base/params")
+        ),
+        num_workers=8,
+        num_train_steps=2_500,
+        eval_interval=250,
         eval_batches=8,
         loss_dim_groups={"body": (0, 64), "hand": (64, 128)},
     ),
